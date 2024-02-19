@@ -1,0 +1,623 @@
+public class OTSSystem_P {
+    public class QuoteTerminationException extends Exception {}
+    
+    public static void PreAmendment(Id quoteId){
+        
+        String PickListValue = 'Cancelled';
+        try{
+            SBQQ__Quote__c quote = [SELECT Id, SBQQ__Primary__c,SBQQ__Status__c FROM SBQQ__Quote__c WHERE Id = :quoteId LIMIT 1];
+            
+            if(quote != null && quote.SBQQ__Primary__c == true && quote.SBQQ__Status__c == 'Signed by Customer'){
+                
+                Order existingOrder = [SELECT Id, Status FROM Order WHERE SBQQ__Quote__c = :quoteId LIMIT 1];
+                if(existingOrder != null){
+                    if(existingOrder.Status == PickListValue ){
+                        throw new QuoteTerminationException('Error: Order associated with the Quote is already canceled.');
+                    }
+                    else{
+                        List<blng__Invoice__c> relatedInvoices = [select id, Name, blng__InvoiceStatus__c from blng__Invoice__c where blng__Order__c = :existingOrder.Id ];
+                        //System.debug(relatedInvoices);
+                        //It Cancel All Invoices Either it is Draft or Post.
+                        List<blng__Invoice__c> cancelledInvoices = new List<blng__Invoice__c>();
+                        for(blng__Invoice__c invoice : relatedInvoices ){
+                            if(invoice.blng__InvoiceStatus__c == 'Draft' || invoice.blng__InvoiceStatus__c =='Posted'){
+                                invoice.blng__InvoiceStatus__c = PickListValue;
+                                invoice.blng__Action__c = 'Cancel and Rebill';
+                                invoice.blng__TaxStatus__c = PickListValue;
+                                cancelledInvoices.add(invoice);
+                            }else if(invoice.blng__InvoiceStatus__c == PickListValue){
+                                system.debug('Invoices are already cancelled related to its order');
+                            }else{
+                                system.debug('invoices status not in cancelled, draft or post');
+                            }
+                        }
+                        try{
+                            if (!cancelledInvoices.isEmpty()){
+                                SBQQ.TriggerControl.disable();
+                                update cancelledInvoices;
+                                SBQQ.TriggerControl.enable(); 
+                                system.debug( cancelledInvoices);
+                            }
+                        }
+                        catch (DmlException e) {
+                            System.debug(e);
+                        }
+                        //Finding The related product of quote.
+                        List<OrderItem> relatedOrderProduct = [select id, blng__HoldBilling__c, NAV_Hold_Billing_Reason__c from OrderItem where OrderId = :existingOrder.Id];
+                        
+                        List<OrderItem> OrderProductHold = new List<OrderItem>();
+                        for(OrderItem orderProduct :relatedOrderProduct ){
+                            if(orderProduct.blng__HoldBilling__c != 'Yes' && orderProduct.NAV_Hold_Billing_Reason__c == 'N/A'){
+                                orderProduct.blng__HoldBilling__c = 'Yes';
+                                orderProduct.NAV_Hold_Billing_Reason__c = 'Order Cancellation';
+                                OrderProductHold.add(orderProduct);
+                            }else{
+                                system.debug('Error: Order Product is already set for hold billing and hold billing reason');
+                            }
+                            
+                        }
+                        if(!OrderProductHold.isEmpty()){
+                            update OrderProductHold;
+                            
+                        }
+                        
+                        if(existingOrder.Status == 'Activated'){
+                            existingOrder.Status = PickListValue;
+                            existingOrder.CancellationReason__c = 'Wrong Product Added';
+                        }else{
+                            system.debug('Order is already cancelled');
+                        }
+                        update existingOrder;
+                        system.debug('Order is Cancelled' + existingOrder);
+                    }
+                }
+                else{
+                    throw new QuoteTerminationException('Error: Order associated with the Quote not found.');
+                }
+                
+            }
+            else{
+                throw new QuoteTerminationException('Error: Quote does not meet conditions for termination.');
+            }
+        }
+        catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }
+    }
+    
+    
+    public static void PostAmendment(Id quoteId2){
+        
+        SBQQ__Quote__c quote2 = [SELECT Id, SBQQ__Primary__c, SBQQ__ListAmount__c, SBQQ__CustomerAmount__c, SBQQ__NetAmount__c ,SBQQ__Type__c, SBQQ__Opportunity2__c,Previous_Contract_Start_Date__c FROM SBQQ__Quote__c WHERE Id = :quoteId2 ];
+        if (quote2 != null) {
+            // Update the Start Date field
+            quote2.SBQQ__StartDate__c = quote2.Previous_Contract_Start_Date__c;
+            
+            // Update the record
+            update quote2;
+        }
+        try{
+            if(quote2 != null && quote2.SBQQ__Primary__c == true && quote2.SBQQ__Type__c == 'Amendment'){
+                
+                
+                
+                Opportunity AmendOpp = [select id ,Name ,Contract_Number_New__c, SBQQ__AmendedContract__c FROM Opportunity WHERE ID = :quote2.SBQQ__Opportunity2__c Limit 1 ];
+                
+                
+                
+                Contract OriginalCon = [select id , StartDate ,SBQQ__Quote__c, SBQQ__Order__c from contract where id = :AmendOpp.SBQQ__AmendedContract__c limit 1];                                                                                                                                                                    
+                //system.debug(OriginalCon.SBQQ__Quote__c);
+                
+                List<SBQQ__QuoteLine__c> quoteLinesNew = [select id , SBQQ__Quantity__c,SBQQ__ProductName__c, SBQQ__Product__c, NAV_New_Logo_Revenue__c,NAV_Expansion_Amount__c,NAV_Retention_Revenue__c,SBQQ__StartDate__c,SBQQ__EndDate__c,NAV_Start_Date__c,NAV_End_Date__c,SBQQ__Discount__c,NAV_Range__c from SBQQ__QuoteLine__c where SBQQ__Quote__c = :quote2.Id];
+                
+                List<SBQQ__QuoteLine__c> updatedQuoteLines = new List<SBQQ__QuoteLine__c>();
+                
+                for(SBQQ__QuoteLine__c quoteLine :quoteLinesNew){ 
+                    quoteLine.SBQQ__Quantity__c = 0;
+                    
+                    
+                    updatedQuoteLines.add(quoteLine);
+                }
+                
+                if(!updatedQuoteLines.isEmpty()){
+                    update updatedQuoteLines ;
+                    system.debug('All Amenedment Quote lines quantity have been 0 and start date are set .');
+                }
+                
+                if(quote2 != null){
+                    quote2.NAV_Override_Revenue_Allocation__c = true;
+                    update quote2;
+                }
+                
+                system.debug('Override Revenue Allocation is Checked.');
+                
+                List<SBQQ__QuoteLine__c> quoteLinesOriginal = [select id ,SBQQ__ProductName__c ,SBQQ__Product__c,SBQQ__Quantity__c, NAV_New_Logo_Revenue__c,NAV_Expansion_Amount__c,NAV_Retention_Revenue__c,SBQQ__StartDate__c,SBQQ__EndDate__c,NAV_Start_Date__c,NAV_End_Date__c,SBQQ__Discount__c,NAV_Range__c from  SBQQ__QuoteLine__c where SBQQ__Quote__c = :OriginalCon.SBQQ__Quote__c];
+                
+                //Map Original Quote lines to Amendment Quote lines.
+                Map<String,  Map<Decimal, Map<String, SBQQ__QuoteLine__c>>> OriginalQuoteLinesMap = new Map<String,  Map<Decimal, Map<String, SBQQ__QuoteLine__c>>>();
+                
+                
+                for(SBQQ__QuoteLine__c OriginalQuoteLines :quoteLinesOriginal){
+                    String ProductId = OriginalQuoteLines.SBQQ__Product__c;
+                    Decimal AdditionalDiscount = OriginalQuoteLines.SBQQ__Discount__c;
+                    String MarketCoverage = OriginalQuoteLines.NAV_Range__c;
+                    
+                    if(!OriginalQuoteLinesMap.containsKey(ProductId)){
+                        OriginalQuoteLinesMap.put(ProductId, new  Map<Decimal, Map<String,SBQQ__QuoteLine__c >>());
+                    }
+                    
+                    
+                    
+                    if (!originalQuoteLinesMap.get(ProductId).containsKey(AdditionalDiscount)) {
+                        originalQuoteLinesMap.get(ProductId).put(AdditionalDiscount, new Map<String, SBQQ__QuoteLine__c>());
+                    }
+                    
+                    originalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).put(marketCoverage, OriginalQuoteLines);
+                    
+                }
+                
+                
+                
+                List<SBQQ__QuoteLine__c> SynctoOriginalToAmendlines = new List<SBQQ__QuoteLine__c>();
+                for(SBQQ__QuoteLine__c Amendlines :updatedQuoteLines ){
+                    String ProductId = Amendlines.SBQQ__Product__c;
+                    
+                    Decimal AdditionalDiscount = Amendlines.SBQQ__Discount__c;
+                    String MarketCoverage = Amendlines.NAV_Range__c;
+                    
+                    if(OriginalQuoteLinesMap.containsKey(ProductId)  && OriginalQuoteLinesMap.get(ProductId).containsKey(AdditionalDiscount) && OriginalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).containsKey(MarketCoverage)){
+                        SBQQ__QuoteLine__c NotAmendLines = OriginalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).get(MarketCoverage);
+                        
+                        
+                        if(NotAmendLines.NAV_New_Logo_Revenue__c != Amendlines.NAV_New_Logo_Revenue__c || NotAmendLines.NAV_Expansion_Amount__c != Amendlines.NAV_Expansion_Amount__c || NotAmendLines.NAV_Retention_Revenue__c != Amendlines.NAV_Retention_Revenue__c ||
+                           NotAmendLines.SBQQ__StartDate__c != Amendlines.SBQQ__StartDate__c || NotAmendLines.SBQQ__EndDate__c != Amendlines.SBQQ__EndDate__c || NotAmendLines.NAV_Start_Date__c != Amendlines.NAV_Start_Date__c 
+                           || NotAmendLines.NAV_End_Date__c != Amendlines.NAV_End_Date__c){
+                               
+                               
+                               
+                               Amendlines.NAV_New_Logo_RevenueLegacy__c = -NotAmendLines.NAV_New_Logo_Revenue__c;
+                               Amendlines.NAV_Expansion_AmountLegacy__c = -NotAmendLines.NAV_Expansion_Amount__c;
+                               Amendlines.NAV_Retention_RevenueLegacy__c = -NotAmendLines.NAV_Retention_Revenue__c;
+                               Amendlines.SBQQ__StartDate__c = NotAmendLines.SBQQ__StartDate__c;
+                               Amendlines.SBQQ__EndDate__c = NotAmendLines.SBQQ__EndDate__c ;
+                               Amendlines.NAV_Start_Date__c  = NotAmendLines.NAV_Start_Date__c;
+                               Amendlines.NAV_End_Date__c = NotAmendLines.NAV_End_Date__c ;
+                               SynctoOriginalToAmendlines.add(Amendlines);    
+                               system.debug('That Felds are updated by original quote lines value which are not matched');
+                               
+                           }
+                        else{
+                            system.debug('All Fields values are matched as same as original quote lines');
+                        }
+                        
+                    }
+                }
+                
+                if(!SynctoOriginalToAmendlines.isEmpty()){
+                    update SynctoOriginalToAmendlines;
+                }
+                //Mathing of All amounts from original quote.
+                SBQQ__Quote__c quote1 = [select id , SBQQ__Opportunity2__c, SBQQ__ListAmount__c,SBQQ__CustomerAmount__c,SBQQ__NetAmount__c from SBQQ__Quote__c where id =:OriginalCon.SBQQ__Quote__c];
+                Opportunity oppOriginal = [select id ,Name ,Contract_Number_New__c from Opportunity where id = :quote1.SBQQ__Opportunity2__c];
+                if(oppOriginal.Contract_Number_New__c != AmendOpp.Contract_Number_New__c){
+                    AmendOpp.Contract_Number_New__c = oppOriginal.Contract_Number_New__c;
+                    update AmendOpp;
+                    system.debug('Updated Contract Number on Amnedment opp by Original opp contrat number.');
+                }else{
+                    system.debug('Already Contract Number same on both Opp.');
+                }
+                
+                if(quote1.SBQQ__ListAmount__c == -quote2.SBQQ__ListAmount__c && quote1.SBQQ__CustomerAmount__c == -quote2.SBQQ__CustomerAmount__c && quote1.SBQQ__NetAmount__c == -quote2.SBQQ__NetAmount__c){
+                    system.debug('amount on amendmnet quote is exactly negative of original quote amount.');
+                }
+            }
+            
+        } catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }
+    }
+    
+    Public Static Void OrderReversal(Id OrderId){
+        
+        
+        //Check Negative Order Status and Set as reversal Order.
+        Order NegativeOrder = [select id , status, SBQQ__Quote__c from Order where Id = :OrderId LIMIT 1 ];
+        SBQQ__Quote__c quote2 = [SELECT Id,  SBQQ__Opportunity2__c FROM SBQQ__Quote__c WHERE id = :NegativeOrder.SBQQ__Quote__c];
+        Opportunity AmendOpp = [select id ,Name, SBQQ__AmendedContract__c FROM Opportunity WHERE ID = :quote2.SBQQ__Opportunity2__c Limit 1 ];
+        Contract OriginalCon = [select id , StartDate ,SBQQ__Quote__c, SBQQ__Order__c from contract where id = :AmendOpp.SBQQ__AmendedContract__c limit 1];                                                                                                                                                                    
+        
+        try{
+            if(NegativeOrder.Status != 'Activated'){
+                NegativeOrder.Status = 'Activated';
+            }else{
+                system.debug('Negative Order Is Already activated.');
+            }
+            update NegativeOrder;
+            system.debug('Order is Activated' + NegativeOrder);
+            
+            system.debug('You have to Check Revenue Transaction related of Each order product ');
+            
+            List<OrderItem> relatedNegativeOrderProduct = [select id, blng__HoldBilling__c, NAV_Hold_Billing_Reason__c from OrderItem where OrderId = :NegativeOrder.Id];
+            
+            List<OrderItem> NegativeOrderProductHold = new List<OrderItem>();
+            for(OrderItem orderProduct :relatedNegativeOrderProduct ){
+                if(orderProduct.blng__HoldBilling__c != 'Yes' && orderProduct.NAV_Hold_Billing_Reason__c == 'N/A'){
+                    orderProduct.blng__HoldBilling__c = 'Yes';
+                    orderProduct.NAV_Hold_Billing_Reason__c = 'Order Cancellation';
+                    NegativeOrderProductHold.add(orderProduct);
+                    system.debug('Order Product is set for Hold billing and hold billing reason.');
+                }else{
+                    system.debug('Error: Order Product is already set for hold billing and hold billing reason');
+                }
+                
+            }
+            
+            if(!NegativeOrderProductHold.isEmpty()){
+                update NegativeOrderProductHold;
+                
+            }
+            SBQQ__Quote__c quote1 = [select id ,SBQQ__Opportunity2__c, SBQQ__ListAmount__c,SBQQ__CustomerAmount__c,SBQQ__NetAmount__c from SBQQ__Quote__c where id =:OriginalCon.SBQQ__Quote__c];
+            Opportunity oppOriginal = [select id ,Name ,Contract_Number_New__c from Opportunity where id = :quote1.SBQQ__Opportunity2__c];
+            
+            
+            Order order = [select id from Order Where SBQQ__Quote__c = :quote1.Id];
+            if(NegativeOrder.Status == 'Activated'){
+                NegativeOrder.Status = 'Reversal';
+                NegativeOrder.ReversedOrder__c = order.id;
+            }
+            update NegativeOrder;
+            system.debug('Order is Reversed' + NegativeOrder);
+            
+            AmendOpp.Name = '[Reversal]' + ' ' +  AmendOpp.Name;
+            update AmendOpp;
+            
+            oppOriginal.Name = '[Cancelled]' + ' ' + oppOriginal.Name;
+            update oppOriginal;
+            
+            //Delete Renewal Opportunity 
+            Contract NegativeOrderContract = [select id , SBQQ__RenewalQuoted__c from Contract where 	SBQQ__Order__c = :NegativeOrder.id];
+            
+            List<Opportunity> RenewOpp = [select id from Opportunity where SBQQ__RenewedContract__c = :NegativeOrderContract.id];
+            if(NegativeOrderContract != null){
+                if( NegativeOrderContract.SBQQ__RenewalQuoted__c == false ){
+                    NegativeOrderContract.SBQQ__RenewalQuoted__c = true;
+                    update NegativeOrderContract;
+                    system.debug('Renewal Quoted is checked and it will create...Wait For 1-2 minutes');
+                }else{
+                    system.debug('Renew Quote already Checked.');
+                }
+            }
+            
+            
+            if (RenewOpp.size() >0) {
+                delete RenewOpp;
+                system.debug('renewal opp is deleted..' + RenewOpp[0].id);
+                
+            }else{
+                system.debug('No Renewal Opp is found or it is already deleted.');
+            }
+            
+        }  
+        catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }   
+        
+    }
+}public class OTSSystem_P {
+    public class QuoteTerminationException extends Exception {}
+    
+    public static void PreAmendment(Id quoteId){
+        
+        String PickListValue = 'Cancelled';
+        try{
+            SBQQ__Quote__c quote = [SELECT Id, SBQQ__Primary__c,SBQQ__Status__c FROM SBQQ__Quote__c WHERE Id = :quoteId LIMIT 1];
+            
+            if(quote != null && quote.SBQQ__Primary__c == true && quote.SBQQ__Status__c == 'Signed by Customer'){
+                
+                Order existingOrder = [SELECT Id, Status FROM Order WHERE SBQQ__Quote__c = :quoteId LIMIT 1];
+                if(existingOrder != null){
+                    if(existingOrder.Status == PickListValue ){
+                        throw new QuoteTerminationException('Error: Order associated with the Quote is already canceled.');
+                    }
+                    else{
+                        List<blng__Invoice__c> relatedInvoices = [select id, Name, blng__InvoiceStatus__c from blng__Invoice__c where blng__Order__c = :existingOrder.Id ];
+                        //System.debug(relatedInvoices);
+                        //It Cancel All Invoices Either it is Draft or Post.
+                        List<blng__Invoice__c> cancelledInvoices = new List<blng__Invoice__c>();
+                        for(blng__Invoice__c invoice : relatedInvoices ){
+                            if(invoice.blng__InvoiceStatus__c == 'Draft' || invoice.blng__InvoiceStatus__c =='Posted'){
+                                invoice.blng__InvoiceStatus__c = PickListValue;
+                                invoice.blng__Action__c = 'Cancel and Rebill';
+                                invoice.blng__TaxStatus__c = PickListValue;
+                                cancelledInvoices.add(invoice);
+                            }else if(invoice.blng__InvoiceStatus__c == PickListValue){
+                                system.debug('Invoices are already cancelled related to its order');
+                            }else{
+                                system.debug('invoices status not in cancelled, draft or post');
+                            }
+                        }
+                        try{
+                            if (!cancelledInvoices.isEmpty()){
+                                SBQQ.TriggerControl.disable();
+                                update cancelledInvoices;
+                                SBQQ.TriggerControl.enable(); 
+                                system.debug( cancelledInvoices);
+                            }
+                        }
+                        catch (DmlException e) {
+                            System.debug(e);
+                        }
+                        //Finding The related product of quote.
+                        List<OrderItem> relatedOrderProduct = [select id, blng__HoldBilling__c, NAV_Hold_Billing_Reason__c from OrderItem where OrderId = :existingOrder.Id];
+                        
+                        List<OrderItem> OrderProductHold = new List<OrderItem>();
+                        for(OrderItem orderProduct :relatedOrderProduct ){
+                            if(orderProduct.blng__HoldBilling__c != 'Yes' && orderProduct.NAV_Hold_Billing_Reason__c == 'N/A'){
+                                orderProduct.blng__HoldBilling__c = 'Yes';
+                                orderProduct.NAV_Hold_Billing_Reason__c = 'Order Cancellation';
+                                OrderProductHold.add(orderProduct);
+                            }else{
+                                system.debug('Error: Order Product is already set for hold billing and hold billing reason');
+                            }
+                            
+                        }
+                        if(!OrderProductHold.isEmpty()){
+                            update OrderProductHold;
+                            
+                        }
+                        
+                        if(existingOrder.Status == 'Activated'){
+                            existingOrder.Status = PickListValue;
+                            existingOrder.CancellationReason__c = 'Wrong Product Added';
+                        }else{
+                            system.debug('Order is already cancelled');
+                        }
+                        update existingOrder;
+                        system.debug('Order is Cancelled' + existingOrder);
+                    }
+                }
+                else{
+                    throw new QuoteTerminationException('Error: Order associated with the Quote not found.');
+                }
+                
+            }
+            else{
+                throw new QuoteTerminationException('Error: Quote does not meet conditions for termination.');
+            }
+        }
+        catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }
+    }
+    
+    
+    public static void PostAmendment(Id quoteId2){
+        
+        SBQQ__Quote__c quote2 = [SELECT Id, SBQQ__Primary__c, SBQQ__ListAmount__c, SBQQ__CustomerAmount__c, SBQQ__NetAmount__c ,SBQQ__Type__c, SBQQ__Opportunity2__c,Previous_Contract_Start_Date__c FROM SBQQ__Quote__c WHERE Id = :quoteId2 ];
+        if (quote2 != null) {
+            // Update the Start Date field
+            quote2.SBQQ__StartDate__c = quote2.Previous_Contract_Start_Date__c;
+            
+            // Update the record
+            update quote2;
+        }
+        try{
+            if(quote2 != null && quote2.SBQQ__Primary__c == true && quote2.SBQQ__Type__c == 'Amendment'){
+                
+                
+                
+                Opportunity AmendOpp = [select id ,Name ,Contract_Number_New__c, SBQQ__AmendedContract__c FROM Opportunity WHERE ID = :quote2.SBQQ__Opportunity2__c Limit 1 ];
+                
+                
+                
+                Contract OriginalCon = [select id , StartDate ,SBQQ__Quote__c, SBQQ__Order__c from contract where id = :AmendOpp.SBQQ__AmendedContract__c limit 1];                                                                                                                                                                    
+                //system.debug(OriginalCon.SBQQ__Quote__c);
+                
+                List<SBQQ__QuoteLine__c> quoteLinesNew = [select id , SBQQ__Quantity__c,SBQQ__ProductName__c, SBQQ__Product__c, NAV_New_Logo_Revenue__c,NAV_Expansion_Amount__c,NAV_Retention_Revenue__c,SBQQ__StartDate__c,SBQQ__EndDate__c,NAV_Start_Date__c,NAV_End_Date__c,SBQQ__Discount__c,NAV_Range__c from SBQQ__QuoteLine__c where SBQQ__Quote__c = :quote2.Id];
+                
+                List<SBQQ__QuoteLine__c> updatedQuoteLines = new List<SBQQ__QuoteLine__c>();
+                
+                for(SBQQ__QuoteLine__c quoteLine :quoteLinesNew){ 
+                    quoteLine.SBQQ__Quantity__c = 0;
+                    
+                    
+                    updatedQuoteLines.add(quoteLine);
+                }
+                
+                if(!updatedQuoteLines.isEmpty()){
+                    update updatedQuoteLines ;
+                    system.debug('All Amenedment Quote lines quantity have been 0 and start date are set .');
+                }
+                
+                if(quote2 != null){
+                    quote2.NAV_Override_Revenue_Allocation__c = true;
+                    update quote2;
+                }
+                
+                system.debug('Override Revenue Allocation is Checked.');
+                
+                List<SBQQ__QuoteLine__c> quoteLinesOriginal = [select id ,SBQQ__ProductName__c ,SBQQ__Product__c,SBQQ__Quantity__c, NAV_New_Logo_Revenue__c,NAV_Expansion_Amount__c,NAV_Retention_Revenue__c,SBQQ__StartDate__c,SBQQ__EndDate__c,NAV_Start_Date__c,NAV_End_Date__c,SBQQ__Discount__c,NAV_Range__c from  SBQQ__QuoteLine__c where SBQQ__Quote__c = :OriginalCon.SBQQ__Quote__c];
+                
+                //Map Original Quote lines to Amendment Quote lines.
+                Map<String,  Map<Decimal, Map<String, SBQQ__QuoteLine__c>>> OriginalQuoteLinesMap = new Map<String,  Map<Decimal, Map<String, SBQQ__QuoteLine__c>>>();
+                
+                
+                for(SBQQ__QuoteLine__c OriginalQuoteLines :quoteLinesOriginal){
+                    String ProductId = OriginalQuoteLines.SBQQ__Product__c;
+                    Decimal AdditionalDiscount = OriginalQuoteLines.SBQQ__Discount__c;
+                    String MarketCoverage = OriginalQuoteLines.NAV_Range__c;
+                    
+                    if(!OriginalQuoteLinesMap.containsKey(ProductId)){
+                        OriginalQuoteLinesMap.put(ProductId, new  Map<Decimal, Map<String,SBQQ__QuoteLine__c >>());
+                    }
+                    
+                    
+                    
+                    if (!originalQuoteLinesMap.get(ProductId).containsKey(AdditionalDiscount)) {
+                        originalQuoteLinesMap.get(ProductId).put(AdditionalDiscount, new Map<String, SBQQ__QuoteLine__c>());
+                    }
+                    
+                    originalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).put(marketCoverage, OriginalQuoteLines);
+                    
+                }
+                
+                
+                
+                List<SBQQ__QuoteLine__c> SynctoOriginalToAmendlines = new List<SBQQ__QuoteLine__c>();
+                for(SBQQ__QuoteLine__c Amendlines :updatedQuoteLines ){
+                    String ProductId = Amendlines.SBQQ__Product__c;
+                    
+                    Decimal AdditionalDiscount = Amendlines.SBQQ__Discount__c;
+                    String MarketCoverage = Amendlines.NAV_Range__c;
+                    
+                    if(OriginalQuoteLinesMap.containsKey(ProductId)  && OriginalQuoteLinesMap.get(ProductId).containsKey(AdditionalDiscount) && OriginalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).containsKey(MarketCoverage)){
+                        SBQQ__QuoteLine__c NotAmendLines = OriginalQuoteLinesMap.get(ProductId).get(AdditionalDiscount).get(MarketCoverage);
+                        
+                        
+                        if(NotAmendLines.NAV_New_Logo_Revenue__c != Amendlines.NAV_New_Logo_Revenue__c || NotAmendLines.NAV_Expansion_Amount__c != Amendlines.NAV_Expansion_Amount__c || NotAmendLines.NAV_Retention_Revenue__c != Amendlines.NAV_Retention_Revenue__c ||
+                           NotAmendLines.SBQQ__StartDate__c != Amendlines.SBQQ__StartDate__c || NotAmendLines.SBQQ__EndDate__c != Amendlines.SBQQ__EndDate__c || NotAmendLines.NAV_Start_Date__c != Amendlines.NAV_Start_Date__c 
+                           || NotAmendLines.NAV_End_Date__c != Amendlines.NAV_End_Date__c){
+                               
+                               
+                               
+                               Amendlines.NAV_New_Logo_RevenueLegacy__c = -NotAmendLines.NAV_New_Logo_Revenue__c;
+                               Amendlines.NAV_Expansion_AmountLegacy__c = -NotAmendLines.NAV_Expansion_Amount__c;
+                               Amendlines.NAV_Retention_RevenueLegacy__c = -NotAmendLines.NAV_Retention_Revenue__c;
+                               Amendlines.SBQQ__StartDate__c = NotAmendLines.SBQQ__StartDate__c;
+                               Amendlines.SBQQ__EndDate__c = NotAmendLines.SBQQ__EndDate__c ;
+                               Amendlines.NAV_Start_Date__c  = NotAmendLines.NAV_Start_Date__c;
+                               Amendlines.NAV_End_Date__c = NotAmendLines.NAV_End_Date__c ;
+                               SynctoOriginalToAmendlines.add(Amendlines);    
+                               system.debug('That Felds are updated by original quote lines value which are not matched');
+                               
+                           }
+                        else{
+                            system.debug('All Fields values are matched as same as original quote lines');
+                        }
+                        
+                    }
+                }
+                
+                if(!SynctoOriginalToAmendlines.isEmpty()){
+                    update SynctoOriginalToAmendlines;
+                }
+                //Mathing of All amounts from original quote.
+                SBQQ__Quote__c quote1 = [select id , SBQQ__Opportunity2__c, SBQQ__ListAmount__c,SBQQ__CustomerAmount__c,SBQQ__NetAmount__c from SBQQ__Quote__c where id =:OriginalCon.SBQQ__Quote__c];
+                Opportunity oppOriginal = [select id ,Name ,Contract_Number_New__c from Opportunity where id = :quote1.SBQQ__Opportunity2__c];
+                if(oppOriginal.Contract_Number_New__c != AmendOpp.Contract_Number_New__c){
+                    AmendOpp.Contract_Number_New__c = oppOriginal.Contract_Number_New__c;
+                    update AmendOpp;
+                    system.debug('Updated Contract Number on Amnedment opp by Original opp contrat number.');
+                }else{
+                    system.debug('Already Contract Number same on both Opp.');
+                }
+                
+                if(quote1.SBQQ__ListAmount__c == -quote2.SBQQ__ListAmount__c && quote1.SBQQ__CustomerAmount__c == -quote2.SBQQ__CustomerAmount__c && quote1.SBQQ__NetAmount__c == -quote2.SBQQ__NetAmount__c){
+                    system.debug('amount on amendmnet quote is exactly negative of original quote amount.');
+                }
+            }
+            
+        } catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }
+    }
+    
+    Public Static Void OrderReversal(Id OrderId){
+        
+        
+        //Check Negative Order Status and Set as reversal Order.
+        Order NegativeOrder = [select id , status, SBQQ__Quote__c from Order where Id = :OrderId LIMIT 1 ];
+        SBQQ__Quote__c quote2 = [SELECT Id,  SBQQ__Opportunity2__c FROM SBQQ__Quote__c WHERE id = :NegativeOrder.SBQQ__Quote__c];
+        Opportunity AmendOpp = [select id ,Name, SBQQ__AmendedContract__c FROM Opportunity WHERE ID = :quote2.SBQQ__Opportunity2__c Limit 1 ];
+        Contract OriginalCon = [select id , StartDate ,SBQQ__Quote__c, SBQQ__Order__c from contract where id = :AmendOpp.SBQQ__AmendedContract__c limit 1];                                                                                                                                                                    
+        
+        try{
+            if(NegativeOrder.Status != 'Activated'){
+                NegativeOrder.Status = 'Activated';
+            }else{
+                system.debug('Negative Order Is Already activated.');
+            }
+            update NegativeOrder;
+            system.debug('Order is Activated' + NegativeOrder);
+            
+            system.debug('You have to Check Revenue Transaction related of Each order product ');
+            
+            List<OrderItem> relatedNegativeOrderProduct = [select id, blng__HoldBilling__c, NAV_Hold_Billing_Reason__c from OrderItem where OrderId = :NegativeOrder.Id];
+            
+            List<OrderItem> NegativeOrderProductHold = new List<OrderItem>();
+            for(OrderItem orderProduct :relatedNegativeOrderProduct ){
+                if(orderProduct.blng__HoldBilling__c != 'Yes' && orderProduct.NAV_Hold_Billing_Reason__c == 'N/A'){
+                    orderProduct.blng__HoldBilling__c = 'Yes';
+                    orderProduct.NAV_Hold_Billing_Reason__c = 'Order Cancellation';
+                    NegativeOrderProductHold.add(orderProduct);
+                    system.debug('Order Product is set for Hold billing and hold billing reason.');
+                }else{
+                    system.debug('Error: Order Product is already set for hold billing and hold billing reason');
+                }
+                
+            }
+            
+            if(!NegativeOrderProductHold.isEmpty()){
+                update NegativeOrderProductHold;
+                
+            }
+            SBQQ__Quote__c quote1 = [select id ,SBQQ__Opportunity2__c, SBQQ__ListAmount__c,SBQQ__CustomerAmount__c,SBQQ__NetAmount__c from SBQQ__Quote__c where id =:OriginalCon.SBQQ__Quote__c];
+            Opportunity oppOriginal = [select id ,Name ,Contract_Number_New__c from Opportunity where id = :quote1.SBQQ__Opportunity2__c];
+            
+            
+            Order order = [select id from Order Where SBQQ__Quote__c = :quote1.Id];
+            if(NegativeOrder.Status == 'Activated'){
+                NegativeOrder.Status = 'Reversal';
+                NegativeOrder.ReversedOrder__c = order.id;
+            }
+            update NegativeOrder;
+            system.debug('Order is Reversed' + NegativeOrder);
+            
+            AmendOpp.Name = '[Reversal]' + ' ' +  AmendOpp.Name;
+            update AmendOpp;
+            
+            oppOriginal.Name = '[Cancelled]' + ' ' + oppOriginal.Name;
+            update oppOriginal;
+            
+            //Delete Renewal Opportunity 
+            Contract NegativeOrderContract = [select id , SBQQ__RenewalQuoted__c from Contract where 	SBQQ__Order__c = :NegativeOrder.id];
+            
+            List<Opportunity> RenewOpp = [select id from Opportunity where SBQQ__RenewedContract__c = :NegativeOrderContract.id];
+            if(NegativeOrderContract != null){
+                if( NegativeOrderContract.SBQQ__RenewalQuoted__c == false ){
+                    NegativeOrderContract.SBQQ__RenewalQuoted__c = true;
+                    update NegativeOrderContract;
+                    system.debug('Renewal Quoted is checked and it will create...Wait For 1-2 minutes');
+                }else{
+                    system.debug('Renew Quote already Checked.');
+                }
+            }
+            
+            
+            if (RenewOpp.size() >0) {
+                delete RenewOpp;
+                system.debug('renewal opp is deleted..' + RenewOpp[0].id);
+                
+            }else{
+                system.debug('No Renewal Opp is found or it is already deleted.');
+            }
+            
+        }  
+        catch (QuoteTerminationException e) {
+            // Handle the exception as needed, e.g., log the error or display a message to the user
+            System.debug(e.getMessage());
+            
+        }   
+        
+    }
+}
